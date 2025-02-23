@@ -1,0 +1,801 @@
+import os
+import sys
+import json
+import urllib.request
+import threading
+import time
+import ctypes
+import keyboard
+import pyautogui
+from PIL import Image, ImageTk
+import numpy as np
+from itertools import groupby
+from operator import itemgetter
+from colorama import Fore, Style, Back, init
+import random
+import math
+import requests
+import tkinter as tk
+from tkinter import ttk
+from tkinter import messagebox  # Add this import
+from io import BytesIO
+# Initialize colorama
+init(autoreset=True)
+
+# --- Windows API for Instant Mouse Movement and Click ---
+SetCursorPos = ctypes.windll.user32.SetCursorPos
+mouse_event = ctypes.windll.user32.mouse_event
+MOUSEEVENTF_LEFTDOWN = 0x0002
+MOUSEEVENTF_LEFTUP = 0x0004
+
+def instant_click(x, y):
+    SetCursorPos(int(x), int(y))
+    mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+    mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+
+def drag_line(start_x, start_y, end_x, end_y):
+    SetCursorPos(int(start_x), int(start_y))
+    mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, 0)
+    time.sleep(0.00025)
+    SetCursorPos(int(end_x), int(end_y))
+    mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, 0)
+def analyze_white_content(image_url):
+    """Analyze the percentage of white pixels in an image"""
+    try:
+        response = requests.get(image_url)
+        img = Image.open(BytesIO(response.content)).convert('RGB')
+        
+        # Resize for faster analysis
+        img.thumbnail((100, 100))
+        pixels = np.array(img)
+        
+        # Count pixels close to white (allowing for some variation)
+        white_threshold = 240
+        white_pixels = np.sum(np.all(pixels > white_threshold, axis=2))
+        total_pixels = pixels.shape[0] * pixels.shape[1]
+        
+        return float(white_pixels / total_pixels)  # Ensure return value is float
+    except Exception as e:
+        print(f"Error analyzing image: {e}")
+        return 0.0
+# --- Files and Color Data ---
+COORDS_FILE = "coordskribbl.json"
+CANVAS_FILE = "canvaskribbl.json"
+TEMP_IMAGE = "temp_image.png"
+
+def search_images(query, page=1):
+    """Search for images using Bing Images"""
+    try:
+        # Load search settings
+        if not os.path.exists("search_config.json"):
+            # Create default settings if file doesn't exist
+            default_settings = {
+                "file_type": "png",
+                "results_per_page": 10
+            }
+            json.dump(default_settings, open("search_config.json", "w"))
+        
+        search_settings = json.load(open("search_config.json"))
+        file_type = search_settings.get("file_type", "png")
+        results_per_page = search_settings.get("results_per_page", 10)
+
+        # Add file type to query
+        query = f"{query} {file_type}"
+
+        # Format search URL
+        search_url = f"https://www.bing.com/images/search?q={query.replace(' ', '+')}&first={1 + (page-1)*35}"
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+        }
+        
+        response = requests.get(search_url, headers=headers)
+        
+        if response.status_code == 200:
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(response.content, 'html.parser')
+            
+            # Find all image containers
+            images = []
+            for img in soup.find_all('a', class_='iusc'):
+                try:
+                    # Extract image data from m attribute
+                    image_data = json.loads(img.get('m', '{}'))
+                    if 'murl' in image_data:
+                        images.append({
+                            'url': image_data['murl'],
+                            'preview_url': image_data.get('turl', image_data['murl'])
+                        })
+                        # Limit the number of images to results_per_page
+                        if len(images) >= results_per_page:
+                            break
+                except json.JSONDecodeError:
+                    continue
+            
+            return images
+            
+        else:
+            print(f"Error searching images: Status code {response.status_code}")
+            return []
+            
+    except Exception as e:
+        print(f"Error searching for images: {str(e)}")
+        return []
+    
+
+
+def setup_pixabay():
+    """Set up Pixabay API key"""
+    if not os.path.exists("pixabay_config.json"):
+        api_key = input(Fore.CYAN + "Enter your Pixabay API key: ").strip()
+        json.dump({"api_key": api_key}, open("pixabay_config.json", "w"))
+        return api_key
+    else:
+        return json.load(open("pixabay_config.json"))["api_key"]
+
+def get_actual_image_url(url):
+    """
+    For Bing Images, the URL is already the direct image URL
+    """
+    return url
+def search_and_download_clipart():
+    """Search for and download images with GUI browser"""
+    try:
+        # Get search query from user
+        query = input(Fore.CYAN + "Enter what you'd like to search for: ").strip()
+        
+        # Create root window (hidden)
+        root = tk.Tk()
+        root.withdraw()
+        
+        # Create and show image browser
+        browser = ImageBrowser(root, query)
+        root.wait_window(browser)
+        
+        root.destroy()
+            
+    except Exception as e:
+        print(Fore.RED + f"Error: {e}")
+
+class ImageBrowser(tk.Toplevel):
+    def __init__(self, parent, search_query):
+        super().__init__(parent)
+        self.title("Image Browser")
+        self.geometry("800x1000")
+        
+        self.search_query = search_query
+        self.current_page = 1
+        self.images = []
+        self.photo_references = []
+        
+        # Add status label
+        self.status_label = None
+        
+        self.create_widgets()
+        self.search_images()
+
+    def create_widgets(self):
+        # Main frame
+        main_frame = ttk.Frame(self)
+        main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Status label
+        self.status_label = ttk.Label(main_frame, text="")
+        self.status_label.pack(pady=5)
+        
+        # Image frame with scrollbar
+        self.canvas = tk.Canvas(main_frame)
+        scrollbar = ttk.Scrollbar(main_frame, orient=tk.VERTICAL, command=self.canvas.yview)
+        self.scrollable_frame = ttk.Frame(self.canvas)
+        
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        )
+        
+        self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        self.canvas.configure(yscrollcommand=scrollbar.set)
+        
+        # Button frame
+        button_frame = ttk.Frame(main_frame)
+        ttk.Button(button_frame, text="Load More", command=self.load_more).pack(side=tk.LEFT, padx=5)
+        ttk.Button(button_frame, text="New Search", command=self.new_search).pack(side=tk.LEFT, padx=5)
+        
+        # Pack everything
+        self.canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        button_frame.pack(side=tk.BOTTOM, fill=tk.X, pady=10)
+
+    def set_status(self, message):
+        if self.status_label:
+            self.status_label.config(text=message)
+            self.update()
+
+    def search_images(self):
+        self.set_status("Searching for images...")
+        try:
+            images = search_images(self.search_query, self.current_page)
+            
+            if not images:
+                self.set_status("No images found")
+                messagebox.showinfo("No Results", "No images found for this search.")
+                return
+            
+            self.set_status(f"Found {len(images)} images")
+            self.display_images(images)
+            
+        except Exception as e:
+            self.set_status("Error searching for images")
+            messagebox.showerror("Error", f"Error searching for images: {str(e)}")
+
+    def display_images(self, images):
+        # Clear existing images
+        for widget in self.scrollable_frame.winfo_children():
+            widget.destroy()
+        
+        # Reset photo references
+        self.photo_references = []
+        
+        for i, img_data in enumerate(images):
+            frame = ttk.Frame(self.scrollable_frame)
+            frame.pack(fill=tk.X, pady=10)
+            
+            try:
+                # Download and display thumbnail
+                response = requests.get(img_data['preview_url'])
+                if response.status_code == 200:
+                    img = Image.open(BytesIO(response.content))
+                    img.thumbnail((100, 100))
+                    photo = ImageTk.PhotoImage(img)
+                    self.photo_references.append(photo)
+                    
+                    label = ttk.Label(frame, image=photo)
+                    label.image = photo
+                    label.pack(side=tk.LEFT, padx=10)
+                    
+                    # Add select button
+                    url = img_data['url']
+                    ttk.Button(
+                        frame,
+                        text="Select",
+                        command=lambda u=url: self.select_image(u)
+                    ).pack(side=tk.LEFT, padx=5)
+                    
+            except Exception as e:
+                print(f"Error displaying image {i}: {e}")
+
+    def select_image(self, url):
+        self.set_status("Downloading image...")
+        try:
+            # Get the actual image URL from the detail page
+            actual_url = get_actual_image_url(url)
+            if actual_url:
+                # Download the selected image
+                download_image(actual_url)
+                self.destroy()
+            else:
+                self.set_status("Could not get download URL")
+                messagebox.showerror("Error", "Could not get download URL")
+        except Exception as e:
+            self.set_status("Error downloading image")
+            messagebox.showerror("Error", f"Error downloading image: {str(e)}")
+
+    def load_more(self):
+        self.current_page += 1
+        self.search_images()
+
+    def new_search(self):
+        new_query = tk.simpledialog.askstring("New Search", "Enter new search term:")
+        if new_query:
+            self.search_query = new_query
+            self.current_page = 1
+            self.search_images()
+
+PALETTE = np.array([
+    (255,255,255), (0,0,0), (80,80,80), (193,193,193), (239,19,11), (116,11,7), (194,56,0), (255,113,0), (255,228,0), (232,162,0), (0,70,25), (0,204,0), (0,255,145), (0,120,93), (0,86,158), (0,178,255), (35,31,211), (14,8,101), (85,0,105), (163,0,186), (223,105,167), (135,53,84), (204,119,77), (255,172,142), (160,82,45), (99,48,13)
+    ], dtype=np.uint8)
+def capture_coordinates():
+    coords = []
+    print(Fore.CYAN + "Hover over each color (in order) and press 'f':")
+    colors = ["White", "Black", "Gray", "Light Gray", "Red", "Dark Red", "Orange", 
+              "Light Orange", "Yellow", "Dark Yellow", "Dark Green", "Light Green",
+              "Mint", "Dark Mint", "Aquamarine", "Sky Blue", "Blue", "Dark Blue",
+              "Dark Purple", "Purple", "Pink", "Dark Pink", "Peach", "Light Peach",
+              "Brown", "Dark Brown"]
+    for color in colors:
+        while not keyboard.is_pressed("f"):
+            pass
+        coords.append(pyautogui.position())
+        print(Fore.GREEN + f"Captured {color} at {coords[-1]}")
+        while keyboard.is_pressed("f"):
+            pass
+    json.dump({"coordinates": coords}, open(COORDS_FILE, "w"), indent=4)
+    print(Fore.GREEN + "Color coordinates saved.")
+
+def find_closest_palette_color(pixel):
+    """Find the index of the closest color in the palette using weighted color distance"""
+    # Convert to LAB color space for better perceptual color matching
+    distances = np.sqrt(np.sum((PALETTE - pixel) ** 2, axis=1))
+
+    
+    closest_index = np.argmin(distances)
+    return closest_index
+
+# Dithering Quality
+dithering_quality = 2  # Set the initial quality level (1 to 4)
+
+def apply_dithering(img):
+    """Apply dithering to the image based on quality level with improved error handling"""
+    width, height = img.size
+    img_array = np.array(img, dtype=np.float32)
+    
+    # Pre-calculate error diffusion coefficients based on quality
+    if dithering_quality == 1:
+        coeffs = [(1, 0, 7/16)]  # Simple right diffusion
+    elif dithering_quality == 2:
+        coeffs = [
+            (1, 0, 7/16),  # Right
+            (-1, 1, 3/16),  # Bottom-left
+            (0, 1, 5/16),  # Bottom
+            (1, 1, 1/16)  # Bottom-right
+        ]
+    elif dithering_quality == 3:
+        coeffs = [
+            (1, 0, 7/16),  # Right
+            (-1, 1, 3/16),  # Bottom-left
+            (0, 1, 5/16),  # Bottom
+            (1, 1, 1/16),  # Bottom-right
+            (2, 0, 1/32),  # Further right
+            (-2, 1, 1/32),  # Further bottom-left
+            (0, 2, 1/32)  # Further bottom
+        ]
+    else:  # quality 4
+        coeffs = [
+            (1, 0, 7/16),  # Right
+            (-1, 1, 3/16),  # Bottom-left
+            (0, 1, 5/16),  # Bottom
+            (1, 1, 1/16),  # Bottom-right
+            (2, 0, 1/32),  # Further right
+            (-2, 1, 1/32),  # Further bottom-left
+            (0, 2, 1/32),  # Further bottom
+            (2, 1, 1/64),  # Further bottom-right
+            (-1, 2, 1/64)  # Further bottom-left
+        ]
+
+    for y in range(height):
+        for x in range(width):
+            old_pixel = img_array[y, x].copy()
+            palette_index = find_closest_palette_color(old_pixel)
+            new_pixel = PALETTE[palette_index]
+            img_array[y, x] = new_pixel
+            
+            error = old_pixel - new_pixel
+            
+            # Apply error diffusion based on pre-calculated coefficients
+            for dx, dy, coeff in coeffs:
+                nx, ny = x + dx, y + dy
+                if 0 <= nx < width and 0 <= ny < height:
+                    # Add small random variation to prevent banding (optional)
+                    variation = np.random.uniform(-0.05, 0.05) if dithering_quality >= 3 else 0
+                    img_array[ny, nx] += error * (coeff + variation)
+
+    # Ensure values stay within valid range
+    return Image.fromarray(np.uint8(np.clip(img_array, 0, 255)))
+
+def prepare_image(image_path, canvas_bounds):
+    """Prepare image by scaling and dithering"""
+    # Load canvas boundaries
+    top_left, bottom_right = canvas_bounds
+    canvas_width = bottom_right[0] - top_left[0]
+    canvas_height = bottom_right[1] - top_left[1]
+
+    # Load and scale image
+    img = Image.open(image_path).convert('RGB')
+
+    # Calculate scaling to fit canvas, accounting for 4x4 pixel spacing
+    scale_x = (canvas_width / 3) / img.width  # Divide canvas width by 4
+    scale_y = (canvas_height / 3) / img.height  # Divide canvas height by 4
+    scale = min(scale_x, scale_y)
+
+    new_width = int(img.width * scale)
+    new_height = int(img.height * scale)
+
+    # Resize image
+    img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
+    # Apply dithering
+    dithered = apply_dithering(img)
+
+    # Calculate centering offset, accounting for 4x4 pixel spacing
+    offset_x = top_left[0] + (canvas_width - new_width * 3) // 2
+    offset_y = top_left[1] + (canvas_height - new_height * 3) // 2
+
+    return dithered, (offset_x, offset_y)
+
+def quick_shutdown():
+    keyboard.wait("esc")
+    os._exit(0)
+
+threading.Thread(target=quick_shutdown, daemon=True).start()
+
+def center_text(text):
+    """Center text in the console window"""
+    console_width = os.get_terminal_size().columns
+    return text.center(console_width)
+
+def display_menu():
+    os.system("cls" if os.name == "nt" else "clear")
+    
+    # ASCII Art and Title
+    print(Fore.CYAN + r"""
+  ╔════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗
+  ║                             ______         __                _    _        __                                      ║
+  ║                           .' ___  |       [  |              / |_ (_)      |  ]                                     ║
+  ║                          / .'   \_| .---.  | | .---.  .--. `| |-'__   .--.| | .---.                                ║
+  ║                          | |       / /__\\ | |/ /__\\( (`\] | | [  |/ /'`\' |/ /__\\                               ║
+  ║                          \ `.___.'\| \__., | || \__., `'.'. | |, | || \__/  || \__.,                               ║
+  ║                           `.____ .' '.__.'[___]'.__.'[\__) )\__/[___]'.__.;__]'.__.'                               ║
+  ║                                                                                                                    ║
+  ╚════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╝
+    """)
+    
+    # Menu Options
+    print(Fore.GREEN + "╔════════════════════════════════════════════════════════════════════════════════════════════╗")
+    print(Fore.GREEN + "║ " + Fore.CYAN + "1. Load Image from URL" + Fore.GREEN + " " * 69 + "║")
+    print(Fore.GREEN + "║ " + Fore.CYAN + "2. Capture Color Coordinates" + Fore.GREEN + " " * 63 + "║")
+    print(Fore.GREEN + "║ " + Fore.CYAN + "3. Capture Canvas Boundaries" + Fore.GREEN + " " * 63 + "║")
+    print(Fore.GREEN + "║ " + Fore.CYAN + "4. Set Dithering Quality (Current: " + str(dithering_quality) + ")" + Fore.GREEN + " " * 54 + "║")
+    print(Fore.GREEN + "║ " + Fore.CYAN + "5. Exit" + Fore.GREEN + " " * 84 + "║")
+    print(Fore.GREEN + "║ " + Fore.CYAN + "6. Start Drawing (Linear)" + Fore.GREEN + " " * 66 + "║")
+    print(Fore.GREEN + "║ " + Fore.CYAN + "7. Start Drawing (Radial)" + Fore.GREEN + " " * 66 + "║")
+    print(Fore.GREEN + "║ " + Fore.CYAN + "8. Start Drawing (Diagonal)" + Fore.GREEN + " " * 64 + "║")
+    print(Fore.GREEN + "║ " + Fore.CYAN + "9. Start Drawing (Random)" + Fore.GREEN + " " * 66 + "║")
+    print(Fore.GREEN + "║ " + Fore.CYAN + "10. Start Drawing (Spiral)" + Fore.GREEN + " " * 65 + "║")
+    print(Fore.GREEN + "║ " + Fore.CYAN + "11. Start Drawing (Pinwheel)" + Fore.GREEN + " " * 63 + "║")
+    print(Fore.GREEN + "║ " + Fore.CYAN + "12. Start Drawing (Square)" + Fore.GREEN + " " * 65 + "║")
+    print(Fore.GREEN + "║ " + Fore.CYAN + "13. Search and Download Clipart" + Fore.GREEN + " " * 60 + "║")
+    print(Fore.GREEN + "║ " + Fore.CYAN + "14. Change Search Settings" + Fore.GREEN + " " * 65 + "║")
+    print(Fore.GREEN + "╚════════════════════════════════════════════════════════════════════════════════════════════╝")
+    
+    # Status Information
+    print(Fore.YELLOW + "╔════════════════════════════════════════════════════════════════════════════════════════════╗")
+    print(Fore.YELLOW + "║ " + Fore.CYAN + "Color Coords: " + ("Complete" if valid_file(COORDS_FILE) else "Incomplete") + Fore.YELLOW + " " * 69 + "║")
+    print(Fore.YELLOW + "║ " + Fore.CYAN + "Canvas Bounds: " + ("Complete" if valid_file(CANVAS_FILE) else "Incomplete") + Fore.YELLOW + " " * 68 + "║")
+    print(Fore.YELLOW + "║ " + Fore.CYAN + "Image Loaded: " + ("Yes" if image_loaded() else "No") + Fore.YELLOW + " " * 74 + "║")
+    print(Fore.YELLOW + "╚════════════════════════════════════════════════════════════════════════════════════════════╝")
+
+def change_search_settings():
+    """Change search settings"""
+    try:
+        # Load current settings
+        if not os.path.exists("search_config.json"):
+            # Create default settings if file doesn't exist
+            default_settings = {
+                "file_type": "png",
+                "results_per_page": 10
+            }
+            json.dump(default_settings, open("search_config.json", "w"))
+        
+        search_settings = json.load(open("search_config.json"))
+        
+        # Get new settings from user
+        print(Fore.CYAN + "Current search settings:")
+        print(Fore.CYAN + f"File type: {search_settings['file_type']}")
+        print(Fore.CYAN + f"Results per page: {search_settings['results_per_page']}")
+        
+        new_file_type = input(Fore.CYAN + "Enter new file type (png, clipart, photo, etc.): ").strip()
+        new_results_per_page = input(Fore.CYAN + "Enter new number of results per page: ").strip()
+        
+        # Validate and update settings
+        if new_file_type:
+            search_settings['file_type'] = new_file_type
+        if new_results_per_page.isdigit():
+            search_settings['results_per_page'] = int(new_results_per_page)
+        
+        # Save updated settings
+        json.dump(search_settings, open("search_config.json", "w"))
+        print(Fore.GREEN + "Search settings updated.")
+        
+    except Exception as e:
+        print(Fore.RED + f"Error changing search settings: {e}")
+def valid_file(fname):
+    if not os.path.exists(fname): return False
+    try:
+        d = json.load(open(fname))
+        return "coordinates" in d and bool(d["coordinates"])
+    except:
+        return False
+
+def image_loaded():
+    return os.path.exists(TEMP_IMAGE) and os.path.getsize(TEMP_IMAGE) > 0
+
+def download_image(url):
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        req = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(req) as response, open(TEMP_IMAGE, 'wb') as out_file:
+            out_file.write(response.read())
+
+        print(Fore.GREEN + "Image downloaded.")
+
+        # Load the downloaded image
+        img = Image.open(TEMP_IMAGE).convert("RGBA")
+
+        # Replace transparent pixels with white
+        new_img = Image.new("RGBA", img.size, (255, 255, 255, 255))  # White background
+        new_img.paste(img, (0, 0), img)
+
+        # Convert back to RGB and save
+        new_img.convert("RGB").save(TEMP_IMAGE)
+
+        print(Fore.GREEN + "Transparency replaced with white.")
+
+    except Exception as e:
+        with open("drawing_error.txt", "a") as f:
+            f.write(f"Download or processing error: {str(e)}\nURL: {url}\n")
+        print(Fore.RED + "Download or processing error:", e)
+
+
+
+
+def capture_canvas_boundaries():
+    bounds = []
+    print(Fore.CYAN + "Hover over UPPER-LEFT of canvas and press 'f':")
+    while not keyboard.is_pressed("f"):
+        pass
+    bounds.append(pyautogui.position())
+    while keyboard.is_pressed("f"):
+        pass
+    print(Fore.CYAN + "Hover over BOTTOM-RIGHT of canvas and press 'f':")
+    while not keyboard.is_pressed("f"):
+        pass
+    bounds.append(pyautogui.position())
+    while keyboard.is_pressed("f"):
+        pass
+    json.dump({"coordinates": bounds}, open(CANVAS_FILE, "w"), indent=4)
+    print(Fore.GREEN + "Canvas boundaries saved.")
+
+def generate_spiral_order(width, height):
+    """Generate pixel order in a spiral pattern"""
+    x, y = 0, 0
+    dx, dy = 1, 0
+    spiral_order = []
+
+    for _ in range(width * height):
+        if 0 <= x < width and 0 <= y < height:
+            spiral_order.append((x, y))
+        if x + dx >= width or x + dx < 0 or y + dy >= height or y + dy < 0 or (x + dx, y + dy) in spiral_order:
+            dx, dy = -dy, dx  # Change direction
+        x += dx
+        y += dy
+
+    return spiral_order
+
+def generate_snake_order(width, height):
+    """Generate pixel order in a snake-like pattern"""
+    snake_order = []
+    for y in range(height):
+        if y % 2 == 0:
+            snake_order.extend((x, y) for x in range(width))
+        else:
+            snake_order.extend((x, y) for x in range(width - 1, -1, -1))
+    return snake_order
+
+def generate_concentric_squares_order(width, height):
+    """Generate pixel order in concentric squares pattern"""
+    squares_order = []
+    center_x, center_y = width // 2, height // 2
+    max_size = max(width, height)
+    
+    for size in range(max_size):
+        # Top edge
+        for x in range(max(0, center_x - size), min(width, center_x + size + 1)):
+            y = center_y - size
+            if 0 <= y < height:
+                squares_order.append((x, y))
+        
+        # Right edge
+        for y in range(max(0, center_y - size), min(height, center_y + size + 1)):
+            x = center_x + size
+            if 0 <= x < width:
+                squares_order.append((x, y))
+        
+        # Bottom edge
+        for x in range(min(width - 1, center_x + size), max(-1, center_x - size - 1), -1):
+            y = center_y + size
+            if 0 <= y < height:
+                squares_order.append((x, y))
+        
+        # Left edge
+        for y in range(min(height - 1, center_y + size), max(-1, center_y - size - 1), -1):
+            x = center_x - size
+            if 0 <= x < width:
+                squares_order.append((x, y))
+    
+    return list(dict.fromkeys(squares_order))  # Remove duplicates while preserving order
+def generate_pinwheel_order(width, height):
+    """Generate pixel order in a pinwheel pattern, separating black and white regions"""
+    center_x, center_y = width // 2, height // 2
+    pinwheel_order_black = []
+    pinwheel_order_white = []
+    
+    for y in range(height):
+        for x in range(width):
+            # Calculate angle and distance from center
+            dx = x - center_x
+            dy = y - center_y
+            angle = math.atan2(dy, dx)
+            distance = math.sqrt(dx*dx + dy*dy)
+            
+            # Convert angle to degrees and normalize to 0-360
+            angle_deg = math.degrees(angle) % 360
+            
+            # Create spiral effect by adding distance component
+            spiral_factor = angle_deg + distance
+            
+            # Determine if point is in black or white region
+            # The number of stripes can be adjusted by changing the modulo value
+            is_black = (spiral_factor // 30) % 2 == 0
+            
+            # Add to appropriate list with spiral_factor as sorting key
+            point_with_key = (spiral_factor, (x, y))
+            if is_black:
+                pinwheel_order_black.append(point_with_key)
+            else:
+                pinwheel_order_white.append(point_with_key)
+    
+    # Sort both lists by spiral factor
+    pinwheel_order_black.sort(key=lambda x: x[0])
+    pinwheel_order_white.sort(key=lambda x: x[0])
+    
+    # Extract just the coordinates in order
+    black_coords = [coord for _, coord in pinwheel_order_black]
+    white_coords = [coord for _, coord in pinwheel_order_white]
+    
+    # Return black coordinates first, then white coordinates
+    return black_coords + white_coords
+
+def draw_image(method="linear"):
+    if not image_loaded():
+        print(Fore.RED + "No image loaded.")
+        return
+    if not valid_file(CANVAS_FILE) or not valid_file(COORDS_FILE):
+        print(Fore.RED + "Missing canvas or color coordinates.")
+        return
+
+    try:
+        # Load coordinates
+        color_coords = json.load(open(COORDS_FILE))["coordinates"]
+        canvas_bounds = json.load(open(CANVAS_FILE))["coordinates"]
+
+        # Prepare the image
+        img, (offset_x, offset_y) = prepare_image(TEMP_IMAGE, canvas_bounds)
+        width, height = img.size
+
+        print(Fore.CYAN + "Press 'g' to start drawing...")
+        keyboard.wait("g")
+
+        # Process image pixel by pixel
+        pixels = np.array(img)
+
+        # Generate pixel order based on the selected method
+        if method == "radial":
+            center_x, center_y = width // 2, height // 2
+            pixel_order = sorted([(x, y) for y in range(height) for x in range(width)],
+                                key=lambda p: math.sqrt((p[0] - center_x) ** 2 + (p[1] - center_y) ** 2))
+        elif method == "diagonal":
+            pixel_order = sorted([(x, y) for y in range(height) for x in range(width)],
+                                key=lambda p: p[0] + p[1])
+        elif method == "random":
+            pixel_order = [(x, y) for y in range(height) for x in range(width)]
+            random.shuffle(pixel_order)
+        elif method == "spiral":
+            pixel_order = generate_spiral_order(width, height)
+        elif method == "squares":
+            pixel_order = generate_concentric_squares_order(width, height)
+        elif method == "pinwheel":
+            pixel_order = generate_pinwheel_order(width, height)
+        else:  # linear (default)
+            pixel_order = [(x, y) for y in range(height) for x in range(width)]
+
+        # Group pixels by color, excluding white pixels (palette index 0)
+        color_groups = {}
+        for x, y in pixel_order:
+            if 0 <= y < height and 0 <= x < width:
+                pixel = pixels[y, x]
+                palette_index = find_closest_palette_color(pixel)
+                
+                # Skip white pixels (palette index 0)
+                if palette_index == 0:
+                    continue
+
+                if palette_index not in color_groups:
+                    color_groups[palette_index] = []
+                color_groups[palette_index].append((x, y))
+
+        # Draw pixels in batches
+        for palette_index, pixels_in_color in color_groups.items():
+            # Ensure palette_index is valid
+            if palette_index < 0 or palette_index >= len(color_coords):
+                print(Fore.RED + f"Invalid palette index: {palette_index}. Skipping color group.")
+                continue
+
+            # Change color if needed
+            coord = color_coords[palette_index]
+            instant_click(coord[0], coord[1])
+            time.sleep(0.0025)
+
+            # Draw all pixels of the current color
+            for x, y in pixels_in_color:
+                if keyboard.is_pressed("esc"):
+                    print(Fore.RED + "Drawing interrupted by user.")
+                    return "Drawing interrupted by user."
+
+                # Draw pixel with 4x4 spacing
+                instant_click(offset_x + x * 3, offset_y + y * 3)
+                time.sleep(0.001)  # Reduced sleep time for faster drawing
+
+        print(Fore.GREEN + "Drawing complete!")
+        return "Drawing complete."
+
+    except Exception as e:
+        print(Fore.RED + f"An error occurred during drawing: {e}")
+        with open("drawing_error.log", "a") as log_file:
+            log_file.write(f"Error: {e}\n")
+        return f"Error occurred: {e}"
+
+def main():
+    global dithering_quality
+    while True:
+        display_menu()
+        ch = input(Fore.CYAN + "Choice: ").strip()
+        if ch == "1":
+            download_image(input(Fore.CYAN + "Image URL: ").strip())
+        elif ch == "2":
+            capture_coordinates()
+        elif ch == "3":
+            capture_canvas_boundaries()
+        elif ch == "4":
+            new_quality = input(Fore.CYAN + "Set dithering quality (1-4): ")
+            if new_quality.isdigit() and 1 <= int(new_quality) <= 4:
+                dithering_quality = int(new_quality)
+                print(Fore.GREEN + f"Dithering quality set to {dithering_quality}.")
+            else:
+                print(Fore.RED + "Invalid quality level. Please enter a number between 1 and 4.")
+        elif ch == "5":
+            sys.exit(0)
+        elif ch == "6":
+            result = draw_image(method="linear")
+            if result:
+                print(Fore.YELLOW + result)
+        elif ch == "7":
+            result = draw_image(method="radial")
+            if result:
+                print(Fore.YELLOW + result)
+        elif ch == "8":
+            result = draw_image(method="diagonal")
+            if result:
+                print(Fore.YELLOW + result)
+        elif ch == "9":
+            result = draw_image(method="random")
+            if result:
+                print(Fore.YELLOW + result)
+        elif ch == "10":
+            result = draw_image(method="spiral")
+            if result:
+                print(Fore.YELLOW + result)
+        elif ch == "11":
+            result = draw_image(method="pinwheel")
+            if result:
+                print(Fore.YELLOW + result)
+        elif ch == "12":
+            result = draw_image(method="squares")
+            if result:
+                print(Fore.YELLOW + result)
+        elif ch == "13":
+            search_and_download_clipart()
+        elif ch == "14":
+            change_search_settings()
+if __name__ == "__main__":
+    main()
