@@ -413,11 +413,6 @@ def prepare_image(image_path, canvas_bounds):
 
     return dithered, (offset_x, offset_y)
 
-def quick_shutdown():
-    keyboard.wait("esc")
-    os._exit(0)
-
-threading.Thread(target=quick_shutdown, daemon=True).start()
 
 def center_text(text):
     """Center text in the console window"""
@@ -729,8 +724,8 @@ def draw_image(method="linear"):
             # Draw all pixels of the current color
             for x, y in pixels_in_color:
                 if keyboard.is_pressed("esc"):
-                    print(Fore.RED + "Drawing interrupted by user.")
-                    return "Drawing interrupted by user."
+                    print(Fore.RED + "Drawing interrupted by user. Returning to main menu.")
+                    return "Drawing interrupted by user. Returning to main menu."
 
                 # Draw pixel with 4x4 spacing
                 instant_click(offset_x + x * 3, offset_y + y * 3)
@@ -744,6 +739,7 @@ def draw_image(method="linear"):
         with open("drawing_error.log", "a") as log_file:
             log_file.write(f"Error: {e}\n")
         return f"Error occurred: {e}"
+
 
 def main():
     global dithering_quality
@@ -797,5 +793,8 @@ def main():
             search_and_download_clipart()
         elif ch == "14":
             change_search_settings()
+
+
+
 if __name__ == "__main__":
     main()
