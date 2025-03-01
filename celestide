@@ -384,7 +384,7 @@ def apply_dithering(img):
     return Image.fromarray(np.uint8(np.clip(img_array, 0, 255)))
 
 def prepare_image(image_path, canvas_bounds):
-    """Prepare image by scaling and dithering"""
+    """Prepare image by scaling and dithering with proper pixel spacing"""
     # Load canvas boundaries
     top_left, bottom_right = canvas_bounds
     canvas_width = bottom_right[0] - top_left[0]
@@ -393,11 +393,16 @@ def prepare_image(image_path, canvas_bounds):
     # Load and scale image
     img = Image.open(image_path).convert('RGB')
 
-    # Calculate scaling to fit canvas, accounting for 4x4 pixel spacing
-    scale_x = (canvas_width / 3) / img.width  # Divide canvas width by 4
-    scale_y = (canvas_height / 3) / img.height  # Divide canvas height by 4
+    # Calculate how many 3x3 cells can fit in the canvas
+    # Using integer division to ensure perfect alignment
+    max_cells_width = canvas_width // 3
+    max_cells_height = canvas_height // 3
+    
+    scale_x = max_cells_width / img.width
+    scale_y = max_cells_height / img.height
     scale = min(scale_x, scale_y)
 
+    # Ensure dimensions are exact multiples for perfect grid alignment
     new_width = int(img.width * scale)
     new_height = int(img.height * scale)
 
@@ -407,9 +412,14 @@ def prepare_image(image_path, canvas_bounds):
     # Apply dithering
     dithered = apply_dithering(img)
 
-    # Calculate centering offset, accounting for 4x4 pixel spacing
-    offset_x = top_left[0] + (canvas_width - new_width * 3) // 2
-    offset_y = top_left[1] + (canvas_height - new_height * 3) // 2
+    # Calculate centering offset with exact 3x3 spacing
+    # Ensure offsets are integer values and perfectly aligned with the 3x3 grid
+    offset_x = top_left[0] + ((canvas_width - (new_width * 3)) // 2)
+    offset_y = top_left[1] + ((canvas_height - (new_height * 3)) // 2)
+    
+    # Make sure offsets are aligned to the 3-pixel grid
+    offset_x = (offset_x // 3) * 3
+    offset_y = (offset_y // 3) * 3
 
     return dithered, (offset_x, offset_y)
 
@@ -651,6 +661,7 @@ def generate_pinwheel_order(width, height):
     # Return black coordinates first, then white coordinates
     return black_coords + white_coords
 
+
 def draw_image(method="linear"):
     if not image_loaded():
         print(Fore.RED + "No image loaded.")
@@ -727,9 +738,17 @@ def draw_image(method="linear"):
                     print(Fore.RED + "Drawing interrupted by user. Returning to main menu.")
                     return "Drawing interrupted by user. Returning to main menu."
 
-                # Draw pixel with 4x4 spacing
-                instant_click(offset_x + x * 3, offset_y + y * 3)
-                time.sleep(0.001)  # Reduced sleep time for faster drawing
+                # Ensure exact pixel positioning with 3x3 spacing
+                # Using multiply by 3 and add a consistent offset for the center of each cell
+                px = offset_x + (x * 3) + 1  # Consistent center of 3x3 cell
+                py = offset_y + (y * 3) + 1  # Consistent center of 3x3 cell
+                
+                # Make sure px and py are integers
+                px = int(px)
+                py = int(py)
+                
+                instant_click(px, py)
+                time.sleep(0.0005)  # Reduced sleep time for faster drawing
 
         print(Fore.GREEN + "Drawing complete!")
         return "Drawing complete."
