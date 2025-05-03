@@ -7,7 +7,7 @@ import time
 import ctypes
 import keyboard
 import pyautogui
-from PIL import Image, ImageTk
+from PIL import Image, ImageTk, ImageDraw, ImageFont
 import numpy as np
 from itertools import groupby
 from operator import itemgetter
@@ -59,23 +59,31 @@ def analyze_white_content(image_url):
         print(f"Error analyzing image: {e}")
         return 0.0
 # --- Files and Color Data ---
-COORDS_FILE = "coordskribbl.json"
-CANVAS_FILE = "canvaskribbl.json"
-TEMP_IMAGE = "temp_image.png"
+DOWNLOADS_DIR = os.path.expanduser("~/Downloads")
+COORDS_FILE = os.path.join(DOWNLOADS_DIR, "coordskribbl.json")
+CANVAS_FILE = os.path.join(DOWNLOADS_DIR, "canvaskribbl.json")
+TEMP_IMAGE = os.path.join(DOWNLOADS_DIR, "temp_image.png")
 
 def search_images(query, page=1):
     """Search for images using Bing Images"""
     try:
+        # Define downloads directory
+        DOWNLOADS_DIR = os.path.expanduser("~/Downloads")
+        config_path = os.path.join(DOWNLOADS_DIR, "search_config.json")
+        
         # Load search settings
-        if not os.path.exists("search_config.json"):
+        if not os.path.exists(config_path):
             # Create default settings if file doesn't exist
             default_settings = {
                 "file_type": "png",
                 "results_per_page": 10
             }
-            json.dump(default_settings, open("search_config.json", "w"))
+            with open(config_path, "w") as f:
+                json.dump(default_settings, f)
         
-        search_settings = json.load(open("search_config.json"))
+        with open(config_path, "r") as f:
+            search_settings = json.load(f)
+            
         file_type = search_settings.get("file_type", "png")
         results_per_page = search_settings.get("results_per_page", 10)
 
@@ -408,6 +416,37 @@ def prepare_image(image_path, canvas_bounds):
 
     # Resize image
     img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+    
+    # Add Celestide logo in upper left corner
+    draw = ImageDraw.Draw(img)
+    
+    # Create a white background box for the logo
+    logo_width = min(new_width // 4, 80)  # Limit logo width
+    logo_height = min(new_height // 8, 30)  # Limit logo height
+    padding = 4
+    
+    # Draw white background rectangle
+    draw.rectangle([(padding, padding), (logo_width * 2.2 + padding + 10, logo_height * 1.1 + padding)], fill=(255, 255, 255))
+    
+    # Try to use a font if available, otherwise use simple text drawing
+    try:
+        # For the main CELESTIDE text
+        font_size_main = max(int(logo_height * 0.6), 9)
+        font_main = ImageFont.truetype("arial.ttf", font_size_main)
+        
+        # For the smaller text
+        font_size_sub = max(int(logo_height * 0.4), 7)
+        font_sub = ImageFont.truetype("arial.ttf", font_size_sub)
+        
+        # Draw "CELESTIDE" in black
+        draw.text((padding + 2, padding + 2), "CELESTIDE", fill=(0, 0, 0), font=font_main)
+        
+        # Draw "BEST FREE SKRIBBL BOT" in red
+        draw.text((padding + 2, padding + font_size_main + 2), "BEST FREE SKRIBBL BOT", fill=(255, 0, 0), font=font_sub)
+    except:
+        # Fallback if font loading fails
+        draw.text((padding + 2, padding + 2), "CELESTIDE", fill=(0, 0, 0))
+        draw.text((padding + 2, padding + 10), "BEST FREE SKRIBBL BOT", fill=(255, 0, 0))
 
     # Apply dithering
     dithered = apply_dithering(img)
@@ -423,15 +462,36 @@ def prepare_image(image_path, canvas_bounds):
 
     return dithered, (offset_x, offset_y)
 
-
 def center_text(text):
     """Center text in the console window"""
     console_width = os.get_terminal_size().columns
     return text.center(console_width)
 
 def display_menu():
-    os.system("cls" if os.name == "nt" else "clear")
     
+    os.system("cls" if os.name == "nt" else "clear")
+    # Add this to your main() function before display_menu() is called
+    print(f"Current directory: {os.getcwd()}")
+    print(f"COORDS_FILE exists: {os.path.exists(COORDS_FILE)}")
+    print(f"CANVAS_FILE exists: {os.path.exists(CANVAS_FILE)}")
+
+    try:
+        with open(COORDS_FILE, 'r') as f:
+            coords_data = json.load(f)
+            print(f"COORDS_FILE format: {list(coords_data.keys())}")
+            print(f"COORDS_FILE has coordinates: {'coordinates' in coords_data}")
+            print(f"COORDS_FILE coordinates length: {len(coords_data.get('coordinates', []))}")
+    except Exception as e:
+        print(f"Error reading COORDS_FILE: {e}")
+        
+    try:
+        with open(CANVAS_FILE, 'r') as f:
+            canvas_data = json.load(f)
+            print(f"CANVAS_FILE format: {list(canvas_data.keys())}")
+            print(f"CANVAS_FILE has coordinates: {'coordinates' in canvas_data}")
+            print(f"CANVAS_FILE coordinates length: {len(canvas_data.get('coordinates', []))}")
+    except Exception as e:
+        print(f"Error reading CANVAS_FILE: {e}")
     # ASCII Art and Title
     print(Fore.CYAN + r"""
   ╔════════════════════════════════════════════════════════════════════════════════════════════════════════════════════╗
@@ -730,7 +790,7 @@ def draw_image(method="linear"):
             # Change color if needed
             coord = color_coords[palette_index]
             instant_click(coord[0], coord[1])
-            time.sleep(0.0025)
+            time.sleep(0.0008)
 
             # Draw all pixels of the current color
             for x, y in pixels_in_color:
@@ -748,7 +808,7 @@ def draw_image(method="linear"):
                 py = int(py)
                 
                 instant_click(px, py)
-                time.sleep(0.0005)  # Reduced sleep time for faster drawing
+                time.sleep(0.0008)  # Reduced sleep time for faster drawing
 
         print(Fore.GREEN + "Drawing complete!")
         return "Drawing complete."
