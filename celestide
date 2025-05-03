@@ -420,33 +420,61 @@ def prepare_image(image_path, canvas_bounds):
     # Add Celestide logo in upper left corner
     draw = ImageDraw.Draw(img)
     
-    # Create a white background box for the logo
+    # Create watermark parameters
     logo_width = min(new_width // 4, 80)  # Limit logo width
-    logo_height = min(new_height // 8, 30)  # Limit logo height
+    logo_height = min(new_height // 8, 25)  # Limit logo height
     padding = 4
-    
-    # Draw white background rectangle
-    draw.rectangle([(padding, padding), (logo_width * 2.2 + padding + 10, logo_height * 1.1 + padding)], fill=(255, 255, 255))
     
     # Try to use a font if available, otherwise use simple text drawing
     try:
         # For the main CELESTIDE text
-        font_size_main = max(int(logo_height * 0.6), 9)
+        font_size_main = max(int(logo_height * 0.4), 10)
         font_main = ImageFont.truetype("arial.ttf", font_size_main)
         
         # For the smaller text
-        font_size_sub = max(int(logo_height * 0.4), 7)
+        font_size_sub = max(int(logo_height * 0.2), 8)
         font_sub = ImageFont.truetype("arial.ttf", font_size_sub)
         
-        # Draw "CELESTIDE" in black
-        draw.text((padding + 2, padding + 2), "CELESTIDE", fill=(0, 0, 0), font=font_main)
+        # Draw text with outline effect
         
-        # Draw "BEST FREE SKRIBBL BOT" in red
-        draw.text((padding + 2, padding + font_size_main + 2), "BEST FREE SKRIBBL BOT", fill=(255, 0, 0), font=font_sub)
+        # CELESTIDE text with outline
+        outline_color = (0, 0, 0)  # Black outline
+        text_color = (255, 255, 255)  # White text
+        text_pos = (padding, padding)
+        
+        # Draw black outline by offsetting text in all directions
+        offsets = [(0, 1), (1, 0), (0, -1), (-1, 0), (1, 1), (-1, -1), (1, -1), (-1, 1)]
+        for dx, dy in offsets:
+            draw.text((text_pos[0]+dx, text_pos[1]+dy), "CELESTIDE", fill=outline_color, font=font_main)
+        
+        # Draw the main text on top
+        draw.text(text_pos, "CELESTIDE", fill=text_color, font=font_main)
+        
+        # Draw "BEST FREE SKRIBBL BOT" with outline
+        subtext_pos = (padding, padding + font_size_main + 1)
+        subtext_color = (255, 50, 50)  # Bright red text
+        
+        # Draw outline for subtext
+        for dx, dy in offsets:
+            draw.text((subtext_pos[0]+dx, subtext_pos[1]+dy), "BEST FREE SKRIBBL BOT", fill=outline_color, font=font_sub)
+        
+        # Draw the subtext on top
+        draw.text(subtext_pos, "BEST FREE SKRIBBL BOT", fill=subtext_color, font=font_sub)
+        
     except:
         # Fallback if font loading fails
-        draw.text((padding + 2, padding + 2), "CELESTIDE", fill=(0, 0, 0))
-        draw.text((padding + 2, padding + 10), "BEST FREE SKRIBBL BOT", fill=(255, 0, 0))
+        # Simple outline effect with position offsets
+        outline_color = (0, 0, 0)
+        
+        # Outline for main text
+        for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+            draw.text((padding+dx, padding+dy), "CELESTIDE", fill=outline_color)
+        draw.text((padding, padding), "CELESTIDE", fill=(255, 255, 255))
+        
+        # Outline for subtext
+        for dx, dy in [(0, 1), (1, 0), (0, -1), (-1, 0)]:
+            draw.text((padding+dx, padding+10+dy), "BEST FREE SKRIBBL BOT", fill=outline_color)
+        draw.text((padding, padding+10), "BEST FREE SKRIBBL BOT", fill=(255, 50, 50))
 
     # Apply dithering
     dithered = apply_dithering(img)
@@ -461,7 +489,6 @@ def prepare_image(image_path, canvas_bounds):
     offset_y = (offset_y // 3) * 3
 
     return dithered, (offset_x, offset_y)
-
 def center_text(text):
     """Center text in the console window"""
     console_width = os.get_terminal_size().columns
